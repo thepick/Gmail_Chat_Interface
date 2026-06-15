@@ -1784,7 +1784,7 @@
   function getHeaderValue(headers, name) {
     headers = headers || [];
     for (var i = 0; i < headers.length; i++) {
-      if (String(headers[i].name || '').toLowerCase() === name.toLowerCase()) return headers[i].value || '';
+      if (String(headers[i].name || '').toLowerCase() === name.toLowerCase()) return fixMojibake(headers[i].value || '');
     }
     return '';
   }
@@ -2108,8 +2108,8 @@
     return rev;
   })();
 
-  function fixMojibake(str) {
-    if (!str) return str;
+  function fixMojibake(str, _depth) {
+    if (!str || _depth > 5) return str;
     var result = '', bytes = [];
     for (var i = 0; i < str.length; i++) {
       var cp = str.charCodeAt(i);
@@ -2129,6 +2129,8 @@
       try { result += new TextDecoder('utf-8', {fatal: true}).decode(new Uint8Array(bytes)); }
       catch(e) { result += String.fromCharCode.apply(null, bytes); }
     }
+    // Recurse until stable (handles multi-layered encoding like triple-UTF-8)
+    if (result !== str) return fixMojibake(result, (_depth || 0) + 1);
     return result;
   }
 
