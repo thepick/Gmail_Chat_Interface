@@ -4563,6 +4563,7 @@
   logoutBtn.addEventListener('click', logout);
   newMessageBtn.addEventListener('click', startNewMessage);
   cancelComposeBtn.addEventListener('click', function() {
+    hideUndoButton();
     composeBody.value = '';
     if (currentThreadMeta && currentThreadMeta.id) {
       setComposeMode('reply');
