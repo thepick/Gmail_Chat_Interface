@@ -2508,6 +2508,42 @@
     return '';
   }
 
+  // Check Gravatar for the given email using a HEAD request.
+  // Returns the Gravatar URL if a photo exists, empty string otherwise.
+  async function checkGravatar(email) {
+    try {
+      var hash = md5(String(email).trim().toLowerCase());
+      if (!hash) return '';
+      var gravatarUrl = 'https://www.gravatar.com/avatar/' + hash + '?d=404&s=160';
+      var resp = await fetch(gravatarUrl, { method: 'HEAD', mode: 'cors' });
+      var ct = (resp.headers.get('Content-Type') || '').toLowerCase();
+      if (resp.ok && ct.indexOf('image/') === 0) {
+        avatarLog('checkGravatar: FOUND for ' + email);
+        // Use the full URL with size for actual display
+        return 'https://www.gravatar.com/avatar/' + hash + '?d=404&s=160';
+      }
+    } catch(e) {
+      // CORS may block HEAD — fall back to GET with no-cors
+      try {
+        var hash2 = md5(String(email).trim().toLowerCase());
+        if (!hash2) return '';
+        var gUrl = 'https://www.gravatar.com/avatar/' + hash2 + '?d=404&s=160';
+        var imgTest = await new Promise(function(resolve) {
+          var img = new Image();
+          img.onload = function() { resolve(true); };
+          img.onerror = function() { resolve(false); };
+          img.src = gUrl;
+          setTimeout(function() { resolve(false); }, 3000);
+        });
+        if (imgTest) {
+          avatarLog('checkGravatar: FOUND for ' + email + ' (via Image test)');
+          return gUrl;
+        }
+      } catch(e2) {}
+    }
+    return '';
+  }
+
   // Cascade through all available avatar sources — fastest/most reliable first.
   async function getAvatarUrl(email) {
     email = normalizeEmail(email);
@@ -2555,6 +2591,14 @@
       try {
         photoUrl = await fetchAvatarFromOtherContactsSearch(email);
         if (photoUrl) source = 'otherContacts.search';
+      } catch (e) {}
+    }
+
+    // 6. Gravatar — public fallback (no API quota, fast)
+    if (!photoUrl) {
+      try {
+        photoUrl = await checkGravatar(email);
+        if (photoUrl) source = 'Gravatar';
       } catch (e) {}
     }
 
