@@ -1520,7 +1520,58 @@
   var connectionsPhotoMap = null;
   var otherContactsPhotoMap = null;
   var peopleApiDisabledWarned = false;  // one-time warning for missing API
-  var attachmentCache = {};  // attachmentId -> data URL
+  var attachmentCache = {};  // attachmentId -> data URL (in-memory L1, fallback if IDB unavailable)
+
+  // --- IndexedDB attachment cache (L2 persistent storage) ---
+  var IDB_NAME = 'gmail_chat_attachments';
+  var IDB_VERSION = 1;
+  var idbReady = false;
+  var idbDB = null;
+
+  function openIDB() {
+    return new Promise(function(resolve, reject) {
+      if (idbDB) { resolve(idbDB); return; }
+      if (!window.indexedDB) { reject(new Error('IndexedDB not available')); return; }
+      var req = window.indexedDB.open(IDB_NAME, IDB_VERSION);
+      req.onupgradeneeded = function(e) {
+        var db = e.target.result;
+        if (!db.objectStoreNames.contains('attachments')) {
+          db.createObjectStore('attachments');
+        }
+      };
+      req.onsuccess = function(e) {
+        idbDB = e.target.result;
+        idbReady = true;
+        resolve(idbDB);
+      };
+      req.onerror = function(e) { reject(e.target.error); };
+    });
+  }
+
+  function idbGet(key) {
+    return new Promise(function(resolve) {
+      openIDB().then(function(db) {
+        var tx = db.transaction('attachments', 'readonly');
+        var req = tx.objectStore('attachments').get(key);
+        req.onsuccess = function() { resolve(req.result || null); };
+        req.onerror = function() { resolve(null); };
+      }).catch(function() { resolve(null); });
+    });
+  }
+
+  function idbPut(key, value) {
+    return new Promise(function(resolve) {
+      openIDB().then(function(db) {
+        var tx = db.transaction('attachments', 'readwrite');
+        tx.objectStore('attachments').put(value, key);
+        tx.oncomplete = function() { resolve(true); };
+        tx.onerror = function() { resolve(false); };
+      }).catch(function() { resolve(false); });
+    });
+  }
+
+  // Init IDB early (fire-and-forget)
+  openIDB().catch(function() {});
 
   function showMessage(text) {
     alert(text);
@@ -1732,17 +1783,25 @@
 
   // Fetch attachment data from Gmail API. Returns a data URL string.
   // Gmail uses base64url encoding (RFC 4648 §5): '-' instead of '+', '_' instead of '/'.
+  // Checks: in-memory cache → IndexedDB → Gmail API → stores in both caches.
   async function fetchAttachmentData(messageId, attachmentId, mimeType) {
+    // L1: in-memory cache
     if (attachmentCache[attachmentId]) return attachmentCache[attachmentId];
+    // L2: IndexedDB
+    var cached = await idbGet(attachmentId);
+    if (cached) {
+      attachmentCache[attachmentId] = cached;
+      return cached;
+    }
     try {
       var resp = await apiFetch('/messages/' + messageId + '/attachments/' + attachmentId);
       if (!resp || !resp.data) return '';
-      // Convert base64url → standard base64
       var std = String(resp.data).replace(/-/g, '+').replace(/_/g, '/');
       var pad = std.length % 4;
       if (pad) std += new Array(5 - pad).join('=');
       var dataUrl = 'data:' + (mimeType || 'application/octet-stream') + ';base64,' + std;
       attachmentCache[attachmentId] = dataUrl;
+      idbPut(attachmentId, dataUrl);  // fire-and-forget to IndexedDB
       return dataUrl;
     } catch(e) {
       return '';
@@ -3030,7 +3089,18 @@
 
   function fetchAndRenderAttachment(job) {
     var att = job.attachment;
-    // Create loading placeholder with spinner + text + progress bar
+    var isImage = /^image\/(jpeg|png|gif|webp)/i.test(att.mimeType);
+    var isLarge = att.size > 10 * 1024 * 1024; // >10MB
+
+    if (!isImage) {
+      // --- Non-image file: render a clickable download card immediately (on-demand) ---
+      renderFileDownloadCard(job, att);
+      attachmentFetchActive--;
+      processAttachmentQueue();
+      return;
+    }
+
+    // --- Image: auto-load with progress placeholder ---
     var loadRow = document.createElement('div');
     loadRow.className = 'gm-chat-message-row ' + (job.isMine ? 'gm-chat-from-me' : 'gm-chat-from-other');
     var loadStack = document.createElement('div');
@@ -3059,24 +3129,18 @@
       job.container.appendChild(loadRow);
     }
 
-    var isImage = /^image\/(jpeg|png|gif|webp)/i.test(att.mimeType);
-    var isLarge = att.size > 10 * 1024 * 1024; // >10MB
-
     fetchAttachmentData(job.messageId, att.attachmentId, att.mimeType).then(function(dataUrl) {
-      // Replace loading placeholder
       var newRow = document.createElement('div');
       newRow.className = 'gm-chat-message-row ' + (job.isMine ? 'gm-chat-from-me' : 'gm-chat-from-other');
       var newStack = document.createElement('div');
       newStack.className = 'gm-chat-message-stack';
 
       if (!dataUrl) {
-        // Error state
         var err = document.createElement('div');
         err.className = 'gm-chat-attachment-error';
-        err.textContent = '⚠ Could not load: ' + (att.filename || 'attachment');
+        err.textContent = '\u26a0 Could not load: ' + (att.filename || 'attachment');
         newStack.appendChild(err);
-      } else if (isImage && !isLarge) {
-        // Image preview
+      } else if (!isLarge) {
         var img = document.createElement('img');
         img.className = 'gm-chat-attachment-img';
         img.src = dataUrl;
@@ -3085,42 +3149,11 @@
         img.onclick = function() { openLightbox(dataUrl, att.filename); };
         newStack.appendChild(img);
       } else {
-        // File download card — use Blob URL for performance
+        // Large image — show as download card instead
         var blobUrl = dataUrlToBlobUrl(dataUrl);
-        var card = document.createElement('a');
-        card.className = 'gm-chat-attachment-file';
-        card.href = blobUrl;
-        card.download = att.filename || 'attachment';
-        // Revoke blob URL when this attachment row is removed from DOM
-        var revokeOnRemove = function() {
-          if (blobUrl && blobUrl.startsWith('blob:')) {
-            URL.revokeObjectURL(blobUrl);
-            blobUrl = '';
-          }
-        };
-        // Click feedback: brief pulse, then fade
-        card.addEventListener('click', function() {
-          card.classList.add('gm-chat-attachment-downloading');
-          setTimeout(function() { card.classList.remove('gm-chat-attachment-downloading'); }, 1500);
-        });
-        // Revoke when replaced by a new render
-        loadRow._revokeBlob = revokeOnRemove;
-        newRow._revokeBlob = revokeOnRemove;
-        var icon = document.createElement('div');
-        icon.className = 'gm-chat-attachment-file-icon';
-        icon.textContent = getFileExtIcon(att.filename);
-        var info = document.createElement('div');
-        info.className = 'gm-chat-attachment-file-info';
-        var nameEl = document.createElement('div');
-        nameEl.className = 'gm-chat-attachment-file-name';
-        nameEl.textContent = att.filename || 'attachment';
-        var sizeEl = document.createElement('div');
-        sizeEl.className = 'gm-chat-attachment-file-size';
-        sizeEl.textContent = formatFileSize(att.size);
-        info.appendChild(nameEl);
-        info.appendChild(sizeEl);
-        card.appendChild(icon);
-        card.appendChild(info);
+        var card = buildFileCardDOM(att, blobUrl);
+        loadRow._revokeBlob = function() { if (blobUrl && blobUrl.startsWith('blob:')) { URL.revokeObjectURL(blobUrl); blobUrl = ''; } };
+        newRow._revokeBlob = loadRow._revokeBlob;
         newStack.appendChild(card);
       }
 
@@ -3130,10 +3163,110 @@
       processAttachmentQueue();
     }).catch(function() {
       loadEl.className = 'gm-chat-attachment-error';
-      loadEl.textContent = '⚠ Could not load: ' + (att.filename || 'attachment');
+      loadEl.textContent = '\u26a0 Could not load: ' + (att.filename || 'attachment');
       attachmentFetchActive--;
       processAttachmentQueue();
     });
+  }
+
+  // Render a file download card — no fetch yet. Click triggers on-demand download.
+  function renderFileDownloadCard(job, att) {
+    var row = document.createElement('div');
+    row.className = 'gm-chat-message-row ' + (job.isMine ? 'gm-chat-from-me' : 'gm-chat-from-other');
+    var stack = document.createElement('div');
+    stack.className = 'gm-chat-message-stack';
+
+    var card = document.createElement('a');
+    card.className = 'gm-chat-attachment-file';
+    card.href = '#';
+    card.download = att.filename || 'attachment';
+    card.style.textDecoration = 'none';
+    var icon = document.createElement('div');
+    icon.className = 'gm-chat-attachment-file-icon';
+    icon.textContent = getFileExtIcon(att.filename);
+    var info = document.createElement('div');
+    info.className = 'gm-chat-attachment-file-info';
+    var nameEl = document.createElement('div');
+    nameEl.className = 'gm-chat-attachment-file-name';
+    nameEl.textContent = att.filename || 'attachment';
+    var sizeEl = document.createElement('div');
+    sizeEl.className = 'gm-chat-attachment-file-size';
+    sizeEl.textContent = formatFileSize(att.size);
+    info.appendChild(nameEl);
+    info.appendChild(sizeEl);
+    card.appendChild(icon);
+    card.appendChild(info);
+    stack.appendChild(card);
+    row.appendChild(stack);
+
+    // Insert after the text row
+    if (job.afterRow.nextSibling) {
+      job.container.insertBefore(row, job.afterRow.nextSibling);
+    } else {
+      job.container.appendChild(row);
+    }
+
+    // Click handler: fetch on-demand → trigger download
+    card.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (card.classList.contains('gm-chat-attachment-downloading')) return; // already downloading
+      card.classList.add('gm-chat-attachment-downloading');
+      nameEl.textContent = 'Downloading ' + (att.filename || 'attachment') + '\u2026';
+
+      fetchAttachmentData(job.messageId, att.attachmentId, att.mimeType).then(function(dataUrl) {
+        if (!dataUrl) {
+          card.classList.remove('gm-chat-attachment-downloading');
+          nameEl.textContent = '\u26a0 ' + (att.filename || 'attachment') + ' — failed';
+          return;
+        }
+        // Trigger actual browser download
+        var blobUrl = dataUrlToBlobUrl(dataUrl);
+        var a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = att.filename || 'attachment';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Clean up blob URL after a short delay
+        setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 60000);
+        // Restore card
+        card.classList.remove('gm-chat-attachment-downloading');
+        nameEl.textContent = att.filename || 'attachment';
+      }).catch(function() {
+        card.classList.remove('gm-chat-attachment-downloading');
+        nameEl.textContent = '\u26a0 ' + (att.filename || 'attachment') + ' — failed';
+      });
+    });
+  }
+
+  // Build a file card DOM element (reusable for large images as download cards).
+  function buildFileCardDOM(att, blobUrl) {
+    var card = document.createElement('a');
+    card.className = 'gm-chat-attachment-file';
+    card.href = blobUrl || '#';
+    card.download = att.filename || 'attachment';
+    card.style.textDecoration = 'none';
+    var icon = document.createElement('div');
+    icon.className = 'gm-chat-attachment-file-icon';
+    icon.textContent = getFileExtIcon(att.filename);
+    var info = document.createElement('div');
+    info.className = 'gm-chat-attachment-file-info';
+    var nameEl = document.createElement('div');
+    nameEl.className = 'gm-chat-attachment-file-name';
+    nameEl.textContent = att.filename || 'attachment';
+    var sizeEl = document.createElement('div');
+    sizeEl.className = 'gm-chat-attachment-file-size';
+    sizeEl.textContent = formatFileSize(att.size);
+    info.appendChild(nameEl);
+    info.appendChild(sizeEl);
+    card.appendChild(icon);
+    card.appendChild(info);
+    // Brief pulse on click (large images already have data, just downloading)
+    card.addEventListener('click', function() {
+      card.classList.add('gm-chat-attachment-downloading');
+      setTimeout(function() { card.classList.remove('gm-chat-attachment-downloading'); }, 1500);
+    });
+    return card;
   }
 
   // Convert a data: URL to a blob: URL for faster downloads.
