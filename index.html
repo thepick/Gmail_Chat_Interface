@@ -3750,14 +3750,8 @@
           };
         }
 
-        // Use primary calendar (avoids needing full calendar scope for calendar creation)
-        var calData = await externalApiFetch(CALENDAR_API_BASE + '/users/me/calendarList');
-        var calendarId = 'primary'; // fallback
-        if (calData && calData.items) {
-          for (var i = 0; i < calData.items.length; i++) {
-            if (calData.items[i].primary) { calendarId = calData.items[i].id; break; }
-          }
-        }
+        // Use primary calendar directly (literal 'primary' is always valid, no API lookup needed)
+        var calendarId = 'primary';
 
         await externalApiFetch(CALENDAR_API_BASE + '/calendars/' + encodeURIComponent(calendarId) + '/events', {
           method: 'POST',
