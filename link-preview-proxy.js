@@ -12,12 +12,27 @@ function doGet(e) {
   try {
     var response = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
-      followRedirects: true,
+      followRedirects: false,  // Don't follow — extract metadata from redirect target instead
       validateHttpsCertificates: true
     });
     
+    // If redirected, try the redirect URL instead (common for URL shorteners, Google Drive)
+    var redirectUrl = url;
+    var responseCode = response.getResponseCode();
+    if (responseCode >= 300 && responseCode < 400) {
+      var location = response.getHeaders()['Location'] || '';
+      if (location && /^https?:\\/\\//.test(location)) {
+        redirectUrl = location;
+        response = UrlFetchApp.fetch(redirectUrl, {
+          muteHttpExceptions: true,
+          followRedirects: true,
+          validateHttpsCertificates: true
+        });
+      }
+    }
+    
     var html = response.getContentText();
-    var result = extractMetadata(html, url);
+    var result = extractMetadata(html, redirectUrl);
     return jsonResponse(result);
   } catch(e) {
     return jsonResponse({ error: e.toString() }, 500);
@@ -92,8 +107,10 @@ function escapeRegExp(string) {
 }
 
 function jsonResponse(data, code) {
-  var output = ContentService.createTextOutput(JSON.stringify(data));
-  if (code) output = output.setMimeType(ContentService.MimeType.JSON);
-  else output = output.setMimeType(ContentService.MimeType.JSON);
+  var output = ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+  // Explicit CORS headers for cross-origin fetch from the browser
+  output.addHeader('Access-Control-Allow-Origin', '*');
+  output.addHeader('Access-Control-Allow-Methods', 'GET');
   return output;
 }
