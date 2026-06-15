@@ -1015,6 +1015,45 @@
       box-sizing: border-box;
     }
     .task-dialog textarea { resize: vertical; }
+    /* --- Clock time picker --- */
+    .clock-widget {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .clock-widget canvas {
+      cursor: pointer;
+      border-radius: 50%;
+      display: block;
+    }
+    .clock-ampm {
+      display: flex;
+      gap: 0;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .clock-ampm-btn {
+      border: none;
+      background: #fff;
+      color: #6b7280;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 18px;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .clock-ampm-btn.active {
+      background: #06c755;
+      color: #fff;
+    }
+    .clock-ampm-btn:first-child { border-right: 1px solid #d8dee4; }
+    .clock-digital {
+      font-size: 16px;
+      font-weight: 700;
+      color: #202124;
+    }
     .task-dialog-actions {
       display: flex;
       justify-content: flex-end;
@@ -1449,21 +1488,14 @@
           <label>Due date</label>
           <input type="date" id="taskDue">
           <label>Time</label>
-          <select id="taskTime">
-            <option value="08:00">08:00</option>
-            <option value="09:00" selected>09:00</option>
-            <option value="10:00">10:00</option>
-            <option value="11:00">11:00</option>
-            <option value="12:00">12:00</option>
-            <option value="13:00">13:00</option>
-            <option value="14:00">14:00</option>
-            <option value="15:00">15:00</option>
-            <option value="16:00">16:00</option>
-            <option value="17:00">17:00</option>
-            <option value="18:00">18:00</option>
-            <option value="19:00">19:00</option>
-            <option value="20:00">20:00</option>
-          </select>
+          <div class="clock-widget">
+            <canvas id="taskClock" width="180" height="180"></canvas>
+            <div class="clock-ampm">
+              <button type="button" id="clockAM" class="clock-ampm-btn active">AM</button>
+              <button type="button" id="clockPM" class="clock-ampm-btn">PM</button>
+            </div>
+            <div class="clock-digital" id="clockDigital">9:00</div>
+          </div>
           <label>Reminder</label>
           <select id="taskReminder">
             <option value="0" selected>At time of event</option>
@@ -3677,6 +3709,128 @@
   // --- Google Calendar Reminders (uses Calendar API for timed popup reminders) ---
   var CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3';
 
+  // --- Clock time picker ---
+  var clockHour = 9, clockMinute = 0, clockIsPM = false;
+  var clockDragging = null; // 'hour' | 'minute' | null
+
+  function drawClock() {
+    var c = document.getElementById('taskClock');
+    if (!c) return;
+    var ctx = c.getContext('2d');
+    var cx = 90, cy = 90, r = 82;
+    ctx.clearRect(0, 0, 180, 180);
+    // Face
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = '#f8f9fa'; ctx.fill();
+    ctx.strokeStyle = '#d8dee4'; ctx.lineWidth = 2; ctx.stroke();
+    // Hour tick marks (12)
+    for (var i = 0; i < 12; i++) {
+      var ang = (i * 30 - 90) * Math.PI / 180;
+      var x1 = cx + Math.cos(ang) * (r - 14);
+      var y1 = cy + Math.sin(ang) * (r - 14);
+      var x2 = cx + Math.cos(ang) * (r - 2);
+      var y2 = cy + Math.sin(ang) * (r - 2);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.strokeStyle = '#9aa0a6'; ctx.lineWidth = 2; ctx.stroke();
+      // Hour number
+      var nx = cx + Math.cos(ang) * (r - 26);
+      var ny = cy + Math.sin(ang) * (r - 26) + 5;
+      ctx.fillStyle = '#4b5563'; ctx.font = '12px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(i === 0 ? '12' : String(i), nx, ny);
+    }
+    // Hour hand
+    var hAng = ((clockHour % 12) * 30 + clockMinute * 0.5 - 90) * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(hAng) * (r * 0.45), cy + Math.sin(hAng) * (r * 0.45));
+    ctx.strokeStyle = '#202124'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.stroke();
+    // Minute hand
+    var mAng = (clockMinute * 6 - 90) * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(mAng) * (r * 0.7), cy + Math.sin(mAng) * (r * 0.7));
+    ctx.strokeStyle = '#06c755'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.stroke();
+    // Center dot
+    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#06c755'; ctx.fill();
+    // Digital display
+    document.getElementById('clockDigital').textContent = clockHour + ':' + String(clockMinute).padStart(2, '0');
+  }
+
+  function getClockTime() {
+    var h = clockHour;
+    if (clockIsPM && h !== 12) h += 12;
+    if (!clockIsPM && h === 12) h = 0;
+    return String(h).padStart(2, '0') + ':' + String(clockMinute).padStart(2, '0');
+  }
+
+  function resetClock() {
+    clockHour = 9; clockMinute = 0; clockIsPM = false;
+    document.getElementById('clockAM').classList.add('active');
+    document.getElementById('clockPM').classList.remove('active');
+    drawClock();
+  }
+
+  function initClock() {
+    var c = document.getElementById('taskClock');
+    if (!c) return;
+    function getAngle(e) {
+      var rect = c.getBoundingClientRect();
+      var x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left - 90;
+      var y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top - 90;
+      var dist = Math.sqrt(x * x + y * y);
+      var ang = Math.atan2(y, x) * 180 / Math.PI + 90;
+      if (ang < 0) ang += 360;
+      return { ang: ang, dist: dist };
+    }
+    c.addEventListener('mousedown', function(e) { startDrag(getAngle(e)); e.preventDefault(); });
+    c.addEventListener('touchstart', function(e) { startDrag(getAngle(e)); e.preventDefault(); });
+    function startDrag(g) {
+      if (g.dist < 20) return; // too close to center
+      // If close to minute hand angle, drag minutes; otherwise drag hours
+      var mAng = clockMinute * 6;
+      var hAng = (clockHour % 12) * 30;
+      var mDiff = Math.abs(g.ang - mAng); if (mDiff > 180) mDiff = 360 - mDiff;
+      var hDiff = Math.abs(g.ang - hAng); if (hDiff > 180) hDiff = 360 - hDiff;
+      // If tapping far from both hands, move the closer one
+      if (g.dist > 60 || Math.min(mDiff, hDiff) < 40) {
+        if (mDiff < hDiff || g.dist > 70) { clockDragging = 'minute'; }
+        else { clockDragging = 'hour'; }
+      } else {
+        clockDragging = 'hour'; // default for inner ring taps
+      }
+      dragUpdate(g);
+    }
+    function dragUpdate(g) {
+      if (!clockDragging) return;
+      if (clockDragging === 'hour') {
+        clockHour = Math.round(g.ang / 30) % 12;
+        if (clockHour === 0) clockHour = 12;
+      } else {
+        clockMinute = Math.round(g.ang / 6) % 60;
+        // Snap to 5 min
+        clockMinute = Math.round(clockMinute / 5) * 5;
+        if (clockMinute === 60) clockMinute = 0;
+      }
+      drawClock();
+    }
+    document.addEventListener('mousemove', function(e) { if (clockDragging) { dragUpdate(getAngle(e)); e.preventDefault(); } });
+    document.addEventListener('touchmove', function(e) { if (clockDragging) { dragUpdate(getAngle(e)); e.preventDefault(); } });
+    document.addEventListener('mouseup', function() { clockDragging = null; });
+    document.addEventListener('touchend', function() { clockDragging = null; });
+    // AM/PM buttons
+    document.getElementById('clockAM').addEventListener('click', function() {
+      clockIsPM = false;
+      this.classList.add('active');
+      document.getElementById('clockPM').classList.remove('active');
+    });
+    document.getElementById('clockPM').addEventListener('click', function() {
+      clockIsPM = true;
+      this.classList.add('active');
+      document.getElementById('clockAM').classList.remove('active');
+    });
+    drawClock();
+  }
+
   // Build an RFC 3339 timestamp from datetime-local value, preserving local time.
   function buildLocalRFC3339(datetimeLocalValue) {
     var d = new Date(datetimeLocalValue);
@@ -3718,12 +3872,16 @@
     document.getElementById('taskTitle').value = title;
     document.getElementById('taskNotes').value = String(body || '').substring(0, 500).trim();
     document.getElementById('taskDue').value = '';
-    // Reset time and reminder to defaults
-    var timeSel = document.getElementById('taskTime');
-    if (timeSel) timeSel.value = '09:00';
+    // Reset clock and reminder to defaults
+    resetClock();
     var remSel = document.getElementById('taskReminder');
     if (remSel) remSel.value = '0';
     document.getElementById('taskDialogOverlay').classList.remove('hidden');
+    // Auto-open date picker
+    setTimeout(function() {
+      var d = document.getElementById('taskDue');
+      if (d && d.showPicker) d.showPicker();
+    }, 100);
 
     var overlay = document.getElementById('taskDialogOverlay');
     var createBtn = document.getElementById('taskCreateBtn');
@@ -3741,7 +3899,7 @@
       newCreate.disabled = true;
       try {
         var dueDate = document.getElementById('taskDue').value;
-        var dueTime = document.getElementById('taskTime').value;
+        var dueTime = getClockTime();
         var notes = document.getElementById('taskNotes').value;
         var reminderMinutes = document.getElementById('taskReminder').value;
 
@@ -4913,6 +5071,7 @@
   });
 
   window.addEventListener('load', function() {
+    initClock();
     setTimeout(function() {
       updateUI();
     }, 200);
