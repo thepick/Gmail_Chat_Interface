@@ -16,13 +16,33 @@ function doGet(e) {
       validateHttpsCertificates: true
     });
     
-    // If redirected, try the redirect URL instead (common for URL shorteners, Google Drive)
+    // If redirected, follow manually (Google Apps Script sometimes mishandles redirect chains)
     var redirectUrl = url;
     var responseCode = response.getResponseCode();
     if (responseCode >= 300 && responseCode < 400) {
-      var location = response.getHeaders()['Location'] || '';
-      if (location && /^https?:\\/\\//.test(location)) {
-        redirectUrl = location;
+      var headers = response.getHeaders();
+      var location = '';
+      for (var k in headers) {
+        if (/^location$/i.test(k)) { location = String(headers[k]).trim(); break; }
+      }
+      if (location) {
+        if (/^https?:\/\//i.test(location)) {
+          redirectUrl = location;
+        } else if (/^\/\//.test(location)) {
+          var scheme = url.match(/^https?:/i);
+          redirectUrl = (scheme ? scheme[0] : 'https:') + location;
+        } else if (/^\//.test(location)) {
+          var host = url.match(/^(https?:\/\/[^\/]+)/);
+          redirectUrl = (host ? host[1] : '') + location;
+        } else {
+          var pathBase = url.replace(/[?#].*$/, '');
+          var hostPath = pathBase.match(/^(https?:\/\/[^\/]+)\//);
+          if (hostPath) {
+            redirectUrl = pathBase.replace(/\/[^\/]*$/, '/') + location;
+          } else {
+            redirectUrl = pathBase + '/' + location;
+          }
+        }
         response = UrlFetchApp.fetch(redirectUrl, {
           muteHttpExceptions: true,
           followRedirects: true,
@@ -109,8 +129,6 @@ function escapeRegExp(string) {
 function jsonResponse(data, code) {
   var output = ContentService.createTextOutput(JSON.stringify(data))
     .setMimeType(ContentService.MimeType.JSON);
-  // Explicit CORS headers for cross-origin fetch from the browser
-  output.addHeader('Access-Control-Allow-Origin', '*');
-  output.addHeader('Access-Control-Allow-Methods', 'GET');
+  if (code) output.setResponseCode(code);
   return output;
 }
