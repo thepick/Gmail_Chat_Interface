@@ -1446,15 +1446,31 @@
           <input type="text" id="taskTitle" readonly>
           <label>Notes</label>
           <textarea id="taskNotes" rows="3" readonly></textarea>
-          <label>Due date &amp; time (optional)</label>
-          <input type="datetime-local" id="taskDue">
+          <label>Due date</label>
+          <input type="date" id="taskDue">
+          <label>Time</label>
+          <select id="taskTime">
+            <option value="08:00">08:00</option>
+            <option value="09:00" selected>09:00</option>
+            <option value="10:00">10:00</option>
+            <option value="11:00">11:00</option>
+            <option value="12:00">12:00</option>
+            <option value="13:00">13:00</option>
+            <option value="14:00">14:00</option>
+            <option value="15:00">15:00</option>
+            <option value="16:00">16:00</option>
+            <option value="17:00">17:00</option>
+            <option value="18:00">18:00</option>
+            <option value="19:00">19:00</option>
+            <option value="20:00">20:00</option>
+          </select>
           <label>Reminder</label>
           <select id="taskReminder">
+            <option value="0" selected>At time of event</option>
             <option value="5">5 minutes before</option>
             <option value="10">10 minutes before</option>
             <option value="15">15 minutes before</option>
             <option value="30">30 minutes before</option>
-            <option value="0">At time of event</option>
             <option value="">No reminder</option>
           </select>
           <p class="task-dialog-note" style="font-size:11px;color:#9aa0a6;margin:8px 0 0;">Creates a calendar event with a popup reminder on your primary calendar.</p>
@@ -3702,8 +3718,11 @@
     document.getElementById('taskTitle').value = title;
     document.getElementById('taskNotes').value = String(body || '').substring(0, 500).trim();
     document.getElementById('taskDue').value = '';
+    // Reset time and reminder to defaults
+    var timeSel = document.getElementById('taskTime');
+    if (timeSel) timeSel.value = '09:00';
     var remSel = document.getElementById('taskReminder');
-    if (remSel) remSel.value = '5';
+    if (remSel) remSel.value = '0';
     document.getElementById('taskDialogOverlay').classList.remove('hidden');
 
     var overlay = document.getElementById('taskDialogOverlay');
@@ -3721,7 +3740,8 @@
       newCreate.textContent = 'Creating...';
       newCreate.disabled = true;
       try {
-        var due = document.getElementById('taskDue').value;
+        var dueDate = document.getElementById('taskDue').value;
+        var dueTime = document.getElementById('taskTime').value;
         var notes = document.getElementById('taskNotes').value;
         var reminderMinutes = document.getElementById('taskReminder').value;
 
@@ -3730,8 +3750,9 @@
           description: notes
         };
 
-        if (due) {
-          var startRFC = buildLocalRFC3339(due);
+        if (dueDate) {
+          // Combine date + time into local RFC3339
+          var startRFC = buildLocalRFC3339(dueDate + 'T' + (dueTime || '09:00'));
           eventBody.start = { dateTime: startRFC };
           // Always use 30-minute duration (Google Calendar requires end > start)
           eventBody.end = { dateTime: addMinutesToRFC3339(startRFC, 30) };
