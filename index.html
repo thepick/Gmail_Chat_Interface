@@ -3766,6 +3766,10 @@
 
         showMessage('✓ Reminder created');
       } catch(e) {
+        // Reset dialog so user can retry after fixing the issue (e.g. re-auth)
+        overlay.classList.remove('hidden');
+        newCreate.textContent = 'Create Reminder';
+        newCreate.disabled = false;
         showMessage('Reminder creation failed: ' + e.message);
       }
     });
