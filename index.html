@@ -1579,15 +1579,25 @@
 
   async function apiFetch(path, options) {
     options = options || {};
+    var isAttach = /\/attachments\//.test(path);
+    if (isAttach) {
+      console.log('[ATTACH] apiFetch called: %s', path);
+    }
     var tokens = getStored('gmail_chat_tokens');
-    if (!tokens || !tokens.access_token) throw new Error('Not authenticated');
+    if (!tokens || !tokens.access_token) {
+      if (isAttach) console.error('[ATTACH] apiFetch: NO TOKENS — not authenticated');
+      throw new Error('Not authenticated');
+    }
     if (tokens.expiry && Date.now() > tokens.expiry - 60000) {
+      if (isAttach) console.log('[ATTACH] apiFetch: token expired, refreshing...');
       tokens = await refreshToken();
+      if (isAttach) console.log('[ATTACH] apiFetch: token refresh %s', tokens ? 'OK' : 'FAILED');
     }
     return await apiFetchWithToken(path, options, tokens);
   }
 
   async function apiFetchWithToken(path, options, tokens, retried) {
+    var isAttach = /\/attachments\//.test(path);
     var headers = Object.assign({}, options.headers || {}, {
       'Authorization': 'Bearer ' + tokens.access_token
     });
@@ -1595,14 +1605,23 @@
       headers['Content-Type'] = 'application/json';
     }
     var opts = Object.assign({}, options, { headers: headers });
+    if (isAttach) {
+      console.log('[ATTACH] apiFetchWithToken: %s%s retried=%s',
+        API_BASE + path, options.method ? ' method=' + options.method : '', retried);
+    }
     var resp = await fetch(API_BASE + path, opts);
+    if (isAttach) {
+      console.log('[ATTACH] apiFetchWithToken response: status=%d ok=%s',
+        resp.status, resp.ok);
+    }
     if (resp.status === 401 && !retried) {
-      // Token expired between checks — refresh and retry once
+      if (isAttach) console.log('[ATTACH] apiFetchWithToken: 401 — refreshing token and retrying');
       tokens = await refreshToken();
       return await apiFetchWithToken(path, options, tokens, true);
     }
     if (!resp.ok) {
       var errText = await resp.text();
+      if (isAttach) console.error('[ATTACH] apiFetchWithToken ERROR %d: %s', resp.status, errText);
       throw new Error('API ' + resp.status + ': ' + errText);
     }
     if (resp.status === 204) return null;
@@ -1785,25 +1804,59 @@
   // Gmail uses base64url encoding (RFC 4648 §5): '-' instead of '+', '_' instead of '/'.
   // Checks: in-memory cache → IndexedDB → Gmail API → stores in both caches.
   async function fetchAttachmentData(messageId, attachmentId, mimeType) {
+    var t0 = performance.now();
+    console.log('[ATTACH] fetchAttachmentData called: msgId=%s attId=%s mime=%s',
+      messageId, attachmentId, mimeType);
     // L1: in-memory cache
-    if (attachmentCache[attachmentId]) return attachmentCache[attachmentId];
-    // L2: IndexedDB
-    var cached = await idbGet(attachmentId);
-    if (cached) {
-      attachmentCache[attachmentId] = cached;
-      return cached;
+    if (attachmentCache[attachmentId]) {
+      console.log('[ATTACH]   L1 memory cache HIT (%.0fms)', performance.now() - t0);
+      return attachmentCache[attachmentId];
     }
+    console.log('[ATTACH]   L1 memory cache MISS');
+    // L2: IndexedDB
+    var tIdb = performance.now();
+    try {
+      var cached = await idbGet(attachmentId);
+      console.log('[ATTACH]   L2 IndexedDB: %s (%.0fms)',
+        cached ? 'HIT (' + (cached.length/1024).toFixed(1) + 'KB)' : 'MISS',
+        performance.now() - tIdb);
+      if (cached) {
+        attachmentCache[attachmentId] = cached;
+        return cached;
+      }
+    } catch(e) {
+      console.warn('[ATTACH]   L2 IndexedDB ERROR:', e.message || e);
+    }
+    // L3: Gmail API
+    console.log('[ATTACH]   L3 fetching from Gmail API: /messages/%s/attachments/%s', messageId, attachmentId);
+    var tApi = performance.now();
     try {
       var resp = await apiFetch('/messages/' + messageId + '/attachments/' + attachmentId);
-      if (!resp || !resp.data) return '';
+      console.log('[ATTACH]   L3 API response received (%.0fms) resp=%s',
+        performance.now() - tApi,
+        resp ? 'OK' : 'NULL/EMPTY');
+      if (!resp || !resp.data) {
+        console.error('[ATTACH]   L3 API returned no data. resp=%o', resp);
+        return '';
+      }
+      var dataLen = String(resp.data || '').length;
+      console.log('[ATTACH]   L3 data size: %d chars (%s)',
+        dataLen,
+        resp.size ? formatFileSize(resp.size) : 'unknown');
       var std = String(resp.data).replace(/-/g, '+').replace(/_/g, '/');
       var pad = std.length % 4;
       if (pad) std += new Array(5 - pad).join('=');
       var dataUrl = 'data:' + (mimeType || 'application/octet-stream') + ';base64,' + std;
+      console.log('[ATTACH]   L3 dataUrl built: %s (%.0fms total)',
+        (dataUrl.length/1024).toFixed(1) + 'KB',
+        performance.now() - t0);
       attachmentCache[attachmentId] = dataUrl;
-      idbPut(attachmentId, dataUrl);  // fire-and-forget to IndexedDB
+      idbPut(attachmentId, dataUrl).then(function(ok) {
+        console.log('[ATTACH]   L2 IndexedDB writeback: %s', ok ? 'OK' : 'FAILED');
+      });
       return dataUrl;
     } catch(e) {
+      console.error('[ATTACH]   L3 API ERROR after %.0fms:', performance.now() - tApi, e.message || e, e);
       return '';
     }
   }
@@ -3067,10 +3120,16 @@
   var ATTACHMENT_MAX_CONCURRENT = 4;
 
   function renderAttachments(messageId, attachments, isMine, afterRow, container) {
+    console.log('[ATTACH] renderAttachments: msgId=%s count=%d',
+      messageId, attachments.length);
     for (var i = 0; i < attachments.length; i++) {
+      var att = attachments[i];
+      var isImage = /^image\/(jpeg|png|gif|webp)/i.test(att.mimeType);
+      console.log('[ATTACH]   [%d] filename=%s mime=%s size=%s isImage=%s attId=%s',
+        i, att.filename, att.mimeType, formatFileSize(att.size), isImage, att.attachmentId);
       attachmentFetchQueue.push({
         messageId: messageId,
-        attachment: attachments[i],
+        attachment: att,
         isMine: isMine,
         afterRow: afterRow,
         container: container
@@ -3209,30 +3268,50 @@
     // Click handler: fetch on-demand → trigger download
     card.addEventListener('click', function(e) {
       e.preventDefault();
-      if (card.classList.contains('gm-chat-attachment-downloading')) return; // already downloading
+      var tClick = performance.now();
+      console.log('[ATTACH] file card CLICKED: attId=%s filename=%s size=%s mime=%s',
+        att.attachmentId, att.filename, formatFileSize(att.size), att.mimeType);
+      if (card.classList.contains('gm-chat-attachment-downloading')) {
+        console.log('[ATTACH]   already downloading, ignoring click');
+        return;
+      }
       card.classList.add('gm-chat-attachment-downloading');
       nameEl.textContent = 'Downloading ' + (att.filename || 'attachment') + '\u2026';
 
       fetchAttachmentData(job.messageId, att.attachmentId, att.mimeType).then(function(dataUrl) {
+        var tFetch = performance.now() - tClick;
+        console.log('[ATTACH]   fetchAttachmentData returned (%.0fms) dataUrl=%s',
+          tFetch, dataUrl ? (dataUrl.length/1024).toFixed(1) + 'KB' : 'NULL/EMPTY');
         if (!dataUrl) {
           card.classList.remove('gm-chat-attachment-downloading');
           nameEl.textContent = '\u26a0 ' + (att.filename || 'attachment') + ' — failed';
+          console.error('[ATTACH]   DOWNLOAD FAILED: no dataUrl returned');
           return;
         }
         // Trigger actual browser download
         var blobUrl = dataUrlToBlobUrl(dataUrl);
+        if (!blobUrl) {
+          card.classList.remove('gm-chat-attachment-downloading');
+          nameEl.textContent = '\u26a0 ' + (att.filename || 'attachment') + ' — failed';
+          console.error('[ATTACH]   DOWNLOAD FAILED: dataUrlToBlobUrl returned empty');
+          return;
+        }
+        console.log('[ATTACH]   blobUrl created: %s', blobUrl.substring(0, 50) + '...');
         var a = document.createElement('a');
         a.href = blobUrl;
         a.download = att.filename || 'attachment';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+        console.log('[ATTACH]   download triggered via <a>.click() (%.0fms total)', performance.now() - tClick);
         // Clean up blob URL after a short delay
         setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 60000);
         // Restore card
         card.classList.remove('gm-chat-attachment-downloading');
         nameEl.textContent = att.filename || 'attachment';
-      }).catch(function() {
+      }).catch(function(err) {
+        var tErr = performance.now() - tClick;
+        console.error('[ATTACH]   fetchAttachmentData THREW after %.0fms:', tErr, err.message || err, err);
         card.classList.remove('gm-chat-attachment-downloading');
         nameEl.textContent = '\u26a0 ' + (att.filename || 'attachment') + ' — failed';
       });
