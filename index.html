@@ -2116,6 +2116,24 @@
       var b = _cp1252_rev[cp];
       if (b !== undefined) {
         bytes.push(b);
+      } else if (cp === 0x20 && bytes.length > 0) {
+        // Space between byte-candidates: skip if next char is also a byte
+        // (handles space-separated byte sequences from multi-layer encoding)
+        var nextIsByte = false;
+        for (var j = i + 1; j < str.length; j++) {
+          var nc = str.charCodeAt(j);
+          if (nc === 0x20) continue;
+          nextIsByte = _cp1252_rev[nc] !== undefined;
+          break;
+        }
+        if (nextIsByte) continue; // skip this space, keep collecting bytes
+        // Space is a real separator — flush buffer
+        if (bytes.length) {
+          try { result += new TextDecoder('utf-8', {fatal: true}).decode(new Uint8Array(bytes)); }
+          catch(e) { result += String.fromCharCode.apply(null, bytes); }
+          bytes = [];
+        }
+        result += ' ';
       } else {
         if (bytes.length) {
           try { result += new TextDecoder('utf-8', {fatal: true}).decode(new Uint8Array(bytes)); }
