@@ -1221,7 +1221,6 @@
     [data-theme="dark"] .topbar,
     [data-theme="dark"] .panel,
     [data-theme="dark"] .sidebar,
-    [data-theme="dark"] .settings-panel,
     [data-theme="dark"] .sidebar-header {
       background: #252540;
       border-color: #3a3a55;
@@ -1304,6 +1303,17 @@
     [data-theme="dark"] .thread-list-star:hover { color: #f0b400; }
     [data-theme="dark"] .empty-conversation { color: #999; }
     [data-theme="dark"] .empty-conversation h2 { color: #e0e0e0; }
+    [data-theme="dark"] .brand { color: #06c755; }
+    [data-theme="dark"] .conversation-subject { color: #999; }
+    [data-theme="dark"] .conversation-status { color: #888; }
+    [data-theme="dark"] .gm-chat-meta { color: #888; }
+    [data-theme="dark"] .compose-hint { color: #888; }
+    [data-theme="dark"] .reply-toggle { color: #aaa; }
+    [data-theme="dark"] .compose-field label { color: #aaa; }
+    [data-theme="dark"] .user-pill { color: #ccc; background: #2a2a45; border-color: #3a3a55; }
+    [data-theme="dark"] .thread-list-empty,
+    [data-theme="dark"] .gm-chat-loading { color: #999; }
+    [data-theme="dark"] .gm-chat-error { color: #f28b82; }
     /* --- Theme toggle button --- */
     .theme-toggle {
       font-size: 18px;
@@ -1461,8 +1471,14 @@
   function removeStored(key) {
     localStorage.removeItem(key);
   }
+  // IMPORTANT: Replace with your own OAuth Client ID from Google Cloud Console.
+  // This is a client-side credential — safe to embed but tied to your project's quota.
   var HARDCODED_CLIENT_ID = '772433672096-se226mkjpdf246g0v64ur1fum8ktmbqj.apps.googleusercontent.com';
   function getClientId() {
+    if (!HARDCODED_CLIENT_ID || HARDCODED_CLIENT_ID.indexOf('YOUR_') === 0) {
+      showMessage('Client ID is not configured. Edit HARDCODED_CLIENT_ID in index.html.');
+      return null;
+    }
     return HARDCODED_CLIENT_ID;
   }
 
@@ -3254,7 +3270,8 @@
   var LINK_PREVIEW_MAX_CONCURRENT = 2;
   var LINK_PREVIEW_TIMEOUT = 5000; // 5s
 
-  var HARDCODED_LINK_PROXY_URL = 'YOUR_LINK_PREVIEW_PROXY_URL'; // Deploy link-preview-proxy.js as Google Apps Script and paste URL here
+  // DO NOT COMMIT SECRETS HERE — paste your deployed Google Apps Script URL.
+  var HARDCODED_LINK_PROXY_URL = ''; // Deploy link-preview-proxy.js as Google Apps Script and paste URL here to enable link previews
   function getLinkProxyUrl() {
     return HARDCODED_LINK_PROXY_URL;
   }
@@ -4567,6 +4584,9 @@
     var themeToggle = document.getElementById('themeToggle');
     if (!themeToggle) return;
 
+    function safeGet(k, fallback) { try { return localStorage.getItem(k) || fallback; } catch(e) { return fallback; } }
+    function safeSet(k, v) { try { localStorage.setItem(k, v); } catch(e) {} }
+
     function getSystemTheme() {
       return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
@@ -4585,21 +4605,21 @@
           document.documentElement.setAttribute('data-theme', 'dark');
         }
       }
-      localStorage.setItem(THEME_KEY, mode);
+      safeSet(THEME_KEY, mode);
     }
 
-    var saved = localStorage.getItem(THEME_KEY) || 'system';
+    var saved = safeGet(THEME_KEY, 'system');
     applyTheme(saved);
 
     themeToggle.addEventListener('click', function() {
-      var current = localStorage.getItem(THEME_KEY) || 'system';
+      var current = safeGet(THEME_KEY, 'system');
       var next = current === 'system' ? 'light' : current === 'light' ? 'dark' : 'system';
       applyTheme(next);
     });
 
     // Listen for system theme changes when in system mode
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
-      if ((localStorage.getItem(THEME_KEY) || 'system') === 'system') {
+      if (safeGet(THEME_KEY, 'system') === 'system') {
         applyTheme('system');
       }
     });
