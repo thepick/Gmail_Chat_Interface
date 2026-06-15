@@ -1803,25 +1803,27 @@
   // Fetch attachment data from Gmail API. Returns a data URL string.
   // Gmail uses base64url encoding (RFC 4648 §5): '-' instead of '+', '_' instead of '/'.
   // Checks: in-memory cache → IndexedDB → Gmail API → stores in both caches.
-  async function fetchAttachmentData(messageId, attachmentId, mimeType) {
+  // Cache key: messageId + filename + size (attachmentIds change between fetches).
+  async function fetchAttachmentData(messageId, attachmentId, mimeType, filename, size) {
+    var cacheKey = messageId + '|' + (filename || '') + '|' + (size || 0);
     var t0 = performance.now();
-    console.log('[ATTACH] fetchAttachmentData called: msgId=%s attId=%s mime=%s',
-      messageId, attachmentId, mimeType);
+    console.log('[ATTACH] fetchAttachmentData called: msgId=%s filename=%s cacheKey=%s',
+      messageId, filename, cacheKey.substring(0, 80));
     // L1: in-memory cache
-    if (attachmentCache[attachmentId]) {
+    if (attachmentCache[cacheKey]) {
       console.log('[ATTACH]   L1 memory cache HIT (%.0fms)', performance.now() - t0);
-      return attachmentCache[attachmentId];
+      return attachmentCache[cacheKey];
     }
     console.log('[ATTACH]   L1 memory cache MISS');
     // L2: IndexedDB
     var tIdb = performance.now();
     try {
-      var cached = await idbGet(attachmentId);
+      var cached = await idbGet(cacheKey);
       console.log('[ATTACH]   L2 IndexedDB: %s (%.0fms)',
         cached ? 'HIT (' + (cached.length/1024).toFixed(1) + 'KB)' : 'MISS',
         performance.now() - tIdb);
       if (cached) {
-        attachmentCache[attachmentId] = cached;
+        attachmentCache[cacheKey] = cached;
         return cached;
       }
     } catch(e) {
@@ -1850,8 +1852,8 @@
       console.log('[ATTACH]   L3 dataUrl built: %s (%.0fms total)',
         (dataUrl.length/1024).toFixed(1) + 'KB',
         performance.now() - t0);
-      attachmentCache[attachmentId] = dataUrl;
-      idbPut(attachmentId, dataUrl).then(function(ok) {
+      attachmentCache[cacheKey] = dataUrl;
+      idbPut(cacheKey, dataUrl).then(function(ok) {
         console.log('[ATTACH]   L2 IndexedDB writeback: %s', ok ? 'OK' : 'FAILED');
       });
       return dataUrl;
@@ -2530,10 +2532,10 @@
         var gUrl = 'https://www.gravatar.com/avatar/' + hash2 + '?d=404&s=160';
         var imgTest = await new Promise(function(resolve) {
           var img = new Image();
-          img.onload = function() { resolve(true); };
-          img.onerror = function() { resolve(false); };
+          var timer = setTimeout(function() { resolve(false); }, 3000);
+          img.onload = function() { clearTimeout(timer); resolve(true); };
+          img.onerror = function() { clearTimeout(timer); resolve(false); };
           img.src = gUrl;
-          setTimeout(function() { resolve(false); }, 3000);
         });
         if (imgTest) {
           avatarLog('checkGravatar: FOUND for ' + email + ' (via Image test)');
@@ -3232,7 +3234,7 @@
       job.container.appendChild(loadRow);
     }
 
-    fetchAttachmentData(job.messageId, att.attachmentId, att.mimeType).then(function(dataUrl) {
+    fetchAttachmentData(job.messageId, att.attachmentId, att.mimeType, att.filename, att.size).then(function(dataUrl) {
       var newRow = document.createElement('div');
       newRow.className = 'gm-chat-message-row ' + (job.isMine ? 'gm-chat-from-me' : 'gm-chat-from-other');
       var newStack = document.createElement('div');
@@ -3322,7 +3324,7 @@
       card.classList.add('gm-chat-attachment-downloading');
       nameEl.textContent = 'Downloading ' + (att.filename || 'attachment') + '\u2026';
 
-      fetchAttachmentData(job.messageId, att.attachmentId, att.mimeType).then(function(dataUrl) {
+      fetchAttachmentData(job.messageId, att.attachmentId, att.mimeType, att.filename, att.size).then(function(dataUrl) {
         var tFetch = performance.now() - tClick;
         console.log('[ATTACH]   fetchAttachmentData returned (%.0fms) dataUrl=%s',
           tFetch, dataUrl ? (dataUrl.length/1024).toFixed(1) + 'KB' : 'NULL/EMPTY');
