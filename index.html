@@ -100,6 +100,13 @@
       color: #fff;
       font-weight: 500;
     }
+    .btn-undo {
+      background: #fff;
+      color: #c5221f;
+      border: 1.5px solid #c5221f;
+      font-weight: 600;
+    }
+    .btn-undo:hover { background: #fce8e6; }
     .icon-btn {
       background: #fff;
       border: 1px solid #dfe5e9;
@@ -1456,6 +1463,7 @@
         <div class="composer-actions">
           <button class="btn btn-secondary hidden" id="cancelComposeBtn">Cancel</button>
           <span style="flex:1;"></span>
+          <button class="btn btn-undo hidden" id="undoSendBtn">Undo Send</button>
           <button class="btn" id="sendBtn">Send</button>
           <span class="schedule-wrap">
             <button class="btn btn-secondary" id="scheduleBtn" title="Schedule send">🕐</button>
@@ -4694,29 +4702,38 @@
   var lastSentMessageId = null;
   var lastSentBody = '';
 
-  function showUndoToast(messageId, body) {
-    hideUndoToast();
+  function showUndoButton(messageId, body) {
+    hideUndoButton();
     lastSentMessageId = messageId;
     lastSentBody = body;
-    var toast = document.getElementById('sendUndoToast');
-    toast.classList.remove('hidden');
-    undoTimer = setTimeout(hideUndoToast, 10000);
+    document.getElementById('sendBtn').classList.add('hidden');
+    document.getElementById('scheduleBtn').parentElement.classList.add('hidden');
+    document.getElementById('undoSendBtn').classList.remove('hidden');
+    undoTimer = setTimeout(hideUndoButton, 8000);
   }
 
-  function hideUndoToast() {
+  function hideUndoButton() {
     if (undoTimer) { clearTimeout(undoTimer); undoTimer = null; }
-    document.getElementById('sendUndoToast').classList.add('hidden');
+    document.getElementById('sendBtn').classList.remove('hidden');
+    document.getElementById('scheduleBtn').parentElement.classList.remove('hidden');
+    var ub = document.getElementById('undoSendBtn');
+    ub.classList.add('hidden');
+    ub.textContent = 'Undo Send';
+    ub.disabled = false;
     lastSentMessageId = null;
   }
 
-  document.getElementById('sendUndoBtn').addEventListener('click', function() {
+  document.getElementById('undoSendBtn').addEventListener('click', function() {
     if (!lastSentMessageId) return;
+    this.textContent = 'Undoing...';
+    this.disabled = true;
     apiFetch('/messages/' + lastSentMessageId + '/trash', { method: 'POST' }).then(function() {
       composeBody.value = lastSentBody;
-      hideUndoToast();
+      hideUndoButton();
       showMessage('Message undone.');
     }).catch(function(e) {
       console.warn('Undo failed:', e);
+      hideUndoButton();
     });
   });
 
@@ -4738,7 +4755,7 @@
     var result = await _originalApiFetch(path, options);
     if (path === '/messages/send' && result && result.id && lastSentBody) {
       // Only show undo for user-initiated sends (lastSentBody is set above)
-      showUndoToast(result.id, lastSentBody);
+      showUndoButton(result.id, lastSentBody);
       lastSentBody = ''; // Reset so scheduled sends don't trigger
     }
     return result;
