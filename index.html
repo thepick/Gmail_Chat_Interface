@@ -4732,6 +4732,15 @@
       composeBody.value = lastSentBody;
       hideUndoButton();
       showMessage('Message undone.');
+      // Remove the trashed message from the chat bubbles instantly
+      if (currentThreadData && currentThreadData.messages) {
+        currentThreadData.messages = currentThreadData.messages.filter(function(m) {
+          return m.id !== lastSentMessageId;
+        });
+        renderThread(currentThreadData, currentThreadMeta);
+      }
+      // Also refresh sidebar in background
+      loadRecentThreadsUI().catch(function(){});
     }).catch(function(e) {
       console.warn('Undo failed:', e);
       hideUndoButton();
