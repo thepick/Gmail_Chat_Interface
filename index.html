@@ -709,6 +709,16 @@
       border-bottom-right-radius: 4px;
       color: #102018;
     }
+    .gm-chat-pending .gm-chat-bubble {
+      background: #e8e8e8 !important;
+      color: #9aa0a6 !important;
+      font-style: italic;
+    }
+    .gm-chat-pending .gm-chat-meta::after {
+      content: ' · Pending send';
+      color: #9aa0a6;
+      font-style: italic;
+    }
     .gm-chat-from-other .gm-chat-bubble {
       background: #ffffff;
       border-bottom-left-radius: 4px;
@@ -3239,7 +3249,7 @@
       body = removeKnownQuotedTail(body, renderedBodies) || '(No readable message text found.)';
       renderedBodies.push(body);
       var row = document.createElement('div');
-      row.className = 'gm-chat-message-row ' + (mine ? 'gm-chat-from-me' : 'gm-chat-from-other');
+      row.className = 'gm-chat-message-row ' + (mine ? 'gm-chat-from-me' : 'gm-chat-from-other') + (msg._pending ? ' gm-chat-pending' : '');
       var cleanFrom = cleanSenderName(from);
       var email = extractEmail(from);
       var avatar = createAvatarElement(email, cleanFrom, 40);
@@ -4569,6 +4579,11 @@
       saveScheduledMessages();
       lastQueuedItemId = null;
       localStorage.removeItem('gmail_chat_pending_undo');
+      // Remove pending bubble from chat
+      if (currentThreadData && currentThreadData.messages) {
+        currentThreadData.messages = currentThreadData.messages.filter(function(m) { return !m._pending; });
+        renderThread(currentThreadData, currentThreadMeta);
+      }
     }
     hideUndoButton();
     composeBody.value = '';
@@ -4619,13 +4634,27 @@
       var payload = { raw: item.raw };
       if (item.threadId) payload.threadId = item.threadId;
       await apiFetch('/messages/send', { method: 'POST', body: JSON.stringify(payload) });
-      // If this was the pending undo message, the send is committed — clear undo state
+      // If this was the pending undo message, the send is committed
       if (lastQueuedItemId === item.id) {
         lastQueuedItemId = null;
         lastSentMessageId = null;
         hideUndoButton();
         localStorage.removeItem('gmail_chat_pending_undo');
         showMessage('Message sent.');
+      }
+      // If this message had a pending bubble in the chat, remove it and re-fetch the thread
+      if (currentThreadData && currentThreadData.messages && item.threadId === currentThreadMeta.id) {
+        var hadPending = false;
+        for (var k = 0; k < currentThreadData.messages.length; k++) {
+          if (currentThreadData.messages[k].id === item.id || currentThreadData.messages[k]._pending) {
+            hadPending = true;
+            break;
+          }
+        }
+        if (hadPending) {
+          // Reload thread to show the real sent message
+          loadThread(item.threadId);
+        }
       }
     } catch(e) {
       console.warn('Scheduled send failed:', e);
@@ -4697,6 +4726,27 @@
     renderAttachmentChips();
     clearDraft();
 
+    // Show pending bubble in chat immediately (will turn green when actually sent)
+    if (currentThreadData && threadId) {
+      var fakeMsg = {
+        id: item.id,
+        threadId: threadId,
+        internalDate: String(Date.now()),
+        _pending: true,
+        payload: {
+          mimeType: 'text/plain',
+          headers: [
+            {name: 'From', value: currentUserEmail || 'me'},
+            {name: 'Date', value: new Date().toUTCString()}
+          ],
+          body: { data: btoa(unescape(encodeURIComponent(body))) }
+        }
+      };
+      currentThreadData.messages = currentThreadData.messages || [];
+      currentThreadData.messages.push(fakeMsg);
+      renderThread(currentThreadData, currentThreadMeta);
+    }
+
     return item;
   }
 
@@ -4741,6 +4791,30 @@
         var remaining = Math.max(0, Math.ceil((found.sendAt - Date.now()) / 1000));
         showUndoButton(saved.id, saved.body);
         showMessage('Message queued — sending in ' + remaining + 's. Click Undo Send to cancel.');
+        // Restore pending bubble in chat
+        if (currentThreadData && found.threadId === currentThreadMeta.id) {
+          var alreadyHas = false;
+          for (var m = 0; m < currentThreadData.messages.length; m++) {
+            if (currentThreadData.messages[m]._pending) { alreadyHas = true; break; }
+          }
+          if (!alreadyHas) {
+            currentThreadData.messages.push({
+              id: found.id,
+              threadId: found.threadId,
+              internalDate: String(saved.queuedAt),
+              _pending: true,
+              payload: {
+                mimeType: 'text/plain',
+                headers: [
+                  {name: 'From', value: currentUserEmail || 'me'},
+                  {name: 'Date', value: new Date(saved.queuedAt).toUTCString()}
+                ],
+                body: { data: btoa(unescape(encodeURIComponent(saved.body))) }
+              }
+            });
+            renderThread(currentThreadData, currentThreadMeta);
+          }
+        }
       } else {
         localStorage.removeItem('gmail_chat_pending_undo');
       }
@@ -4787,6 +4861,13 @@
     scheduledMessages = scheduledMessages.filter(function(s) { return s.id !== lastQueuedItemId; });
     saveScheduledMessages();
     localStorage.removeItem('gmail_chat_pending_undo');
+    // Remove the pending bubble from the chat
+    if (currentThreadData && currentThreadData.messages) {
+      currentThreadData.messages = currentThreadData.messages.filter(function(m) {
+        return m.id !== lastQueuedItemId;
+      });
+      renderThread(currentThreadData, currentThreadMeta);
+    }
     composeBody.value = lastQueuedBody;
     lastQueuedItemId = null;
     lastSentMessageId = null;
