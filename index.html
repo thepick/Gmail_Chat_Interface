@@ -4741,14 +4741,16 @@
   // Attach undo to sendCurrentMessage — wrap the existing send flow
   var _originalSendCurrentMessage = sendCurrentMessage;
   sendCurrentMessage = async function() {
-    // If there's a pending schedule, don't send now
     if (currentScheduleTime) {
       showMessage('You have a scheduled message pending. Cancel it first.');
       return;
     }
-    lastSentBody = composeBody.value; // Capture before original clears it
+    lastSentBody = composeBody.value;
     await _originalSendCurrentMessage();
   };
+  // Re-attach the click handler so it calls the wrapped version
+  sendBtn.removeEventListener('click', _originalSendCurrentMessage);
+  sendBtn.addEventListener('click', sendCurrentMessage);
 
   // Patch the send API call to capture the sent message ID
   var _originalApiFetch = apiFetch;
