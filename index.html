@@ -1795,9 +1795,15 @@
     var padding = normalized.length % 4;
     if (padding) normalized += new Array(5 - padding).join('=');
     try {
-      return decodeURIComponent(escape(atob(normalized)));
+      // Use TextDecoder for proper UTF-8 handling (handles 4-byte emoji correctly)
+      var binary = atob(normalized);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return new TextDecoder('utf-8').decode(bytes);
     } catch (e) {
-      try { return atob(normalized); } catch (e2) { return ''; }
+      // Fallback for old browsers without TextDecoder
+      try { return decodeURIComponent(escape(atob(normalized))); }
+      catch (e2) { try { return atob(normalized); } catch (e3) { return ''; } }
     }
   }
 
@@ -2108,6 +2114,8 @@
       .replace(/[ \t]+\n/g, '\n')
       .replace(/\n[ \t]+/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
+      .replace(/<\/?[a-zA-Z][^>]*\/?>?/g, '') // Strip stray HTML fragments
+      .replace(/<\/\s*/g, '')                // Strip bare closing tag fragments
       .trim();
   }
 
