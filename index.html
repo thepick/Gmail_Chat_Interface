@@ -709,16 +709,6 @@
       border-bottom-right-radius: 4px;
       color: #102018;
     }
-    .gm-chat-unsent .gm-chat-bubble {
-      background: #e8e8e8 !important;
-      color: #9aa0a6 !important;
-      text-decoration: line-through;
-    }
-    .gm-chat-unsent .gm-chat-meta::after {
-      content: ' · Unsent';
-      color: #c5221f;
-      font-style: italic;
-    }
     .gm-chat-from-other .gm-chat-bubble {
       background: #ffffff;
       border-bottom-left-radius: 4px;
@@ -3249,7 +3239,7 @@
       body = removeKnownQuotedTail(body, renderedBodies) || '(No readable message text found.)';
       renderedBodies.push(body);
       var row = document.createElement('div');
-      row.className = 'gm-chat-message-row ' + (mine ? 'gm-chat-from-me' : 'gm-chat-from-other') + (msg._unsent ? ' gm-chat-unsent' : '');
+      row.className = 'gm-chat-message-row ' + (mine ? 'gm-chat-from-me' : 'gm-chat-from-other');
       var cleanFrom = cleanSenderName(from);
       var email = extractEmail(from);
       var avatar = createAvatarElement(email, cleanFrom, 40);
@@ -4573,6 +4563,13 @@
   logoutBtn.addEventListener('click', logout);
   newMessageBtn.addEventListener('click', startNewMessage);
   cancelComposeBtn.addEventListener('click', function() {
+    // Also cancel any pending undo/queued send
+    if (lastQueuedItemId) {
+      scheduledMessages = scheduledMessages.filter(function(s) { return s.id !== lastQueuedItemId; });
+      saveScheduledMessages();
+      lastQueuedItemId = null;
+      localStorage.removeItem('gmail_chat_pending_undo');
+    }
     hideUndoButton();
     composeBody.value = '';
     if (currentThreadMeta && currentThreadMeta.id) {
@@ -4594,7 +4591,7 @@
     try { localStorage.setItem('gmail_chat_scheduled', JSON.stringify(scheduledMessages)); } catch(e) {}
   }
 
-  // Check for due messages every 30s
+  // Check for due messages every 2s (precise timing for the 30s undo window)
   setInterval(function() {
     // Re-read from localStorage so multiple tabs don't duplicate sends
     try { scheduledMessages = JSON.parse(localStorage.getItem('gmail_chat_scheduled') || '[]'); } catch(e) { scheduledMessages = []; }
@@ -4615,13 +4612,21 @@
         sendScheduledMessage(due[j]);
       }
     }
-  }, 30000);
+  }, 2000);
 
   async function sendScheduledMessage(item) {
     try {
       var payload = { raw: item.raw };
       if (item.threadId) payload.threadId = item.threadId;
       await apiFetch('/messages/send', { method: 'POST', body: JSON.stringify(payload) });
+      // If this was the pending undo message, the send is committed — clear undo state
+      if (lastQueuedItemId === item.id) {
+        lastQueuedItemId = null;
+        lastSentMessageId = null;
+        hideUndoButton();
+        localStorage.removeItem('gmail_chat_pending_undo');
+        showMessage('Message sent.');
+      }
     } catch(e) {
       console.warn('Scheduled send failed:', e);
       // Put it back
@@ -4654,54 +4659,62 @@
     }
   });
 
+  // Build a raw MIME message from the current compose state and queue it for sending.
+  // Returns the queued item (with internal id) or null on validation failure.
+  var queueCounter = 0;
+  function queueSendMessage(sendAt) {
+    var body = String(getComposePlainText() || '').trim();
+    if (!body) { showMessage('Write a message first.'); return null; }
+    var to = String(composeTo.value || '').trim();
+    var subject = String(composeSubject.value || '').trim();
+    var msgBuilder = (pendingAttachments.length > 0) ? buildMimeMessage : buildRawMessage;
+    var threadId = (composeMode === 'reply' && currentThreadMeta) ? currentThreadMeta.id : null;
+    var inReplyTo = null;
+    if (composeMode === 'reply' && currentThreadData) {
+      var msgs = currentThreadData.messages || [];
+      var last = msgs.length ? msgs[msgs.length - 1] : null;
+      var hdrs = last && last.payload ? last.payload.headers || [] : [];
+      inReplyTo = getHeaderValue(hdrs, 'Message-ID');
+      to = to || getReplyTarget(msgs);
+      subject = ensureReplySubject(subject || (currentThreadMeta && currentThreadMeta.subject));
+    }
+    if (!to) { showMessage('Could not determine recipient.'); return null; }
+    if (!subject) subject = '(no subject)';
+
+    var raw = encodeBase64Url(msgBuilder({
+      to: to, subject: subject, body: body, htmlBody: getComposeHtml(),
+      inReplyTo: inReplyTo, references: inReplyTo,
+      attachments: pendingAttachments.length > 0 ? pendingAttachments : undefined
+    }));
+
+    var item = { id: 'qm' + (++queueCounter), raw: raw, threadId: threadId, sendAt: sendAt, subject: subject, to: to };
+    scheduledMessages.push(item);
+    saveScheduledMessages();
+
+    // Clear compose
+    composeBody.value = '';
+    pendingAttachments = [];
+    renderAttachmentChips();
+    clearDraft();
+
+    return item;
+  }
+
   document.getElementById('scheduleConfirm').addEventListener('click', function() {
     var input = document.getElementById('scheduleInput');
     var val = input.value;
     if (!val) return;
     var sendAt = new Date(val).getTime();
     if (sendAt <= Date.now()) { showMessage('Pick a future time.'); return; }
-
-    // Build the raw message (same logic as sendCurrentMessage but don't send)
-    var body = String(getComposePlainText() || '').trim();
-    if (!body) { showMessage('Write a message first.'); return; }
-    var to = String(composeTo.value || '').trim();
-    var subject = String(composeSubject.value || '').trim();
-    var msgBuilder = (pendingAttachments.length > 0) ? buildMimeMessage : buildRawMessage;
-    var threadId = (composeMode === 'reply' && currentThreadMeta) ? currentThreadMeta.id : null;
-    var messageId = null;
-    if (composeMode === 'reply' && currentThreadData) {
-      var msgs = currentThreadData.messages || [];
-      var last = msgs.length ? msgs[msgs.length - 1] : null;
-      var hdrs = last && last.payload ? last.payload.headers || [] : [];
-      messageId = getHeaderValue(hdrs, 'Message-ID');
-      to = to || getReplyTarget(msgs);
-      subject = ensureReplySubject(subject || (currentThreadMeta && currentThreadMeta.subject));
-    }
-    if (!to) { showMessage('Could not determine recipient.'); return; }
-    if (!subject) subject = '(no subject)';
-
-    var raw = encodeBase64Url(msgBuilder({
-      to: to, subject: subject, body: body, htmlBody: getComposeHtml(),
-      inReplyTo: messageId, references: messageId,
-      attachments: pendingAttachments.length > 0 ? pendingAttachments : undefined
-    }));
-
-    scheduledMessages.push({ raw: raw, threadId: threadId, sendAt: sendAt, subject: subject, to: to });
-    saveScheduledMessages();
-
-    // Clear compose and show scheduled info
-    composeBody.value = '';
-    pendingAttachments = [];
-    renderAttachmentChips();
-    clearDraft();
+    var item = queueSendMessage(sendAt);
+    if (!item) return;
     currentScheduleTime = sendAt;
-
     document.getElementById('schedulePopover').classList.add('hidden');
     var info = document.getElementById('scheduleInfo');
     info.classList.remove('hidden');
-    info.innerHTML = '⏳ Scheduled for ' + new Date(sendAt).toLocaleString() + ' <span class="schedule-info-cancel" id="scheduleCancel">Cancel</span>';
-    document.getElementById('scheduleCancel').addEventListener('click', function() {
-      scheduledMessages = scheduledMessages.filter(function(s) { return s.sendAt !== sendAt; });
+    info.innerHTML = '⏳ Scheduled for ' + new Date(sendAt).toLocaleString() + ' <span class="schedule-info-cancel" data-queue-id="' + item.id + '">Cancel</span>';
+    document.querySelector('.schedule-info-cancel').addEventListener('click', function() {
+      scheduledMessages = scheduledMessages.filter(function(s) { return s.id !== item.id; });
       saveScheduledMessages();
       info.classList.add('hidden');
       currentScheduleTime = null;
@@ -4713,14 +4726,46 @@
   var lastSentMessageId = null;
   var lastSentBody = '';
 
+  // Restore pending undo state on load (survives page reload)
+  try {
+    var saved = JSON.parse(localStorage.getItem('gmail_chat_pending_undo') || 'null');
+    if (saved && saved.id && Date.now() - saved.queuedAt < 30000) {
+      lastQueuedItemId = saved.id;
+      lastQueuedBody = saved.body;
+      // Find the queued item in scheduledMessages
+      var found = null;
+      for (var k = 0; k < scheduledMessages.length; k++) {
+        if (scheduledMessages[k].id === saved.id) { found = scheduledMessages[k]; break; }
+      }
+      if (found) {
+        var remaining = Math.max(0, Math.ceil((found.sendAt - Date.now()) / 1000));
+        showUndoButton(saved.id, saved.body);
+        showMessage('Message queued — sending in ' + remaining + 's. Click Undo Send to cancel.');
+      } else {
+        localStorage.removeItem('gmail_chat_pending_undo');
+      }
+    } else {
+      localStorage.removeItem('gmail_chat_pending_undo');
+    }
+  } catch(e) { localStorage.removeItem('gmail_chat_pending_undo'); }
+
   function showUndoButton(messageId, body) {
     hideUndoButton();
     lastSentMessageId = messageId;
     lastSentBody = body;
+    lastQueuedItemId = messageId;
+    lastQueuedBody = body;
+    localStorage.setItem('gmail_chat_pending_undo', JSON.stringify({
+      id: messageId, body: body, queuedAt: Date.now()
+    }));
     document.getElementById('sendBtn').classList.add('hidden');
     document.getElementById('scheduleBtn').parentElement.classList.add('hidden');
     document.getElementById('undoSendBtn').classList.remove('hidden');
-    undoTimer = setTimeout(hideUndoButton, 30000);
+    undoTimer = setTimeout(function() {
+      // Auto-clear undo state if window expires (message is already in queue and will send)
+      hideUndoButton();
+      localStorage.removeItem('gmail_chat_pending_undo');
+    }, 30000);
   }
 
   function hideUndoButton() {
@@ -4735,54 +4780,55 @@
   }
 
   document.getElementById('undoSendBtn').addEventListener('click', function() {
-    if (!lastSentMessageId) return;
-    this.textContent = 'Undoing...';
+    if (!lastQueuedItemId) return;
+    this.textContent = 'Cancelling...';
     this.disabled = true;
-    apiFetch('/messages/' + lastSentMessageId + '/trash', { method: 'POST' }).then(function() {
-      composeBody.value = lastSentBody;
-      hideUndoButton();
-      showMessage('Message undone.');
-      // Gray out the undone message in chat bubbles
-      if (currentThreadData && currentThreadData.messages) {
-        for (var i = 0; i < currentThreadData.messages.length; i++) {
-          if (currentThreadData.messages[i].id === lastSentMessageId) {
-            currentThreadData.messages[i]._unsent = true;
-            break;
-          }
-        }
-        renderThread(currentThreadData, currentThreadMeta);
-      }
-      // Also refresh sidebar in background
-      loadRecentThreadsUI().catch(function(){});
-    }).catch(function(e) {
-      console.warn('Undo failed:', e);
-      hideUndoButton();
-    });
+    // Remove the queued message from localStorage — recipient never receives it
+    scheduledMessages = scheduledMessages.filter(function(s) { return s.id !== lastQueuedItemId; });
+    saveScheduledMessages();
+    localStorage.removeItem('gmail_chat_pending_undo');
+    composeBody.value = lastQueuedBody;
+    lastQueuedItemId = null;
+    lastSentMessageId = null;
+    hideUndoButton();
+    showMessage('Send cancelled. Message was not delivered.');
+    // Also refresh sidebar in background
+    loadRecentThreadsUI().catch(function(){});
   });
 
-  // Attach undo to sendCurrentMessage — wrap the existing send flow
+  // --- True undo send: queue message for 30s before actual API call ---
+  // The message stays in localStorage and is sent later by the existing scheduler.
+  // If user clicks Undo, we just remove it from the queue — recipient never sees it.
+  var lastQueuedItemId = null;
+  var lastQueuedBody = '';
+
   var _originalSendCurrentMessage = sendCurrentMessage;
   sendCurrentMessage = async function() {
     if (currentScheduleTime) {
       showMessage('You have a scheduled message pending. Cancel it first.');
       return;
     }
-    lastSentBody = composeBody.value;
-    await _originalSendCurrentMessage();
+    var body = composeBody.value;
+    var sendAt = Date.now() + 30000;
+    var item = queueSendMessage(sendAt);
+    if (!item) return;
+    lastQueuedItemId = item.id;
+    lastQueuedBody = body;
+    lastSentMessageId = item.id; // legacy reference for the interceptor
+    lastSentBody = body;
+    // Show undo button — message is NOT sent yet
+    showUndoButton(item.id, body);
+    showMessage('Message queued — sending in 30s. Click Undo Send to cancel.');
   };
   // Re-attach the click handler so it calls the wrapped version
   sendBtn.removeEventListener('click', _originalSendCurrentMessage);
   sendBtn.addEventListener('click', sendCurrentMessage);
 
-  // Patch the send API call to capture the sent message ID
+  // Patch the send API call to detect when queued message actually gets sent
   var _originalApiFetch = apiFetch;
   apiFetch = async function(path, options) {
     var result = await _originalApiFetch(path, options);
-    if (path === '/messages/send' && result && result.id && lastSentBody) {
-      // Only show undo for user-initiated sends (lastSentBody is set above)
-      showUndoButton(result.id, lastSentBody);
-      lastSentBody = ''; // Reset so scheduled sends don't trigger
-    }
+    // No longer used to show undo — undo button appears immediately on send click.
     return result;
   };
 
