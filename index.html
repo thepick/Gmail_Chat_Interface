@@ -709,6 +709,16 @@
       border-bottom-right-radius: 4px;
       color: #102018;
     }
+    .gm-chat-unsent .gm-chat-bubble {
+      background: #e8e8e8 !important;
+      color: #9aa0a6 !important;
+      text-decoration: line-through;
+    }
+    .gm-chat-unsent .gm-chat-meta::after {
+      content: ' · Unsent';
+      color: #c5221f;
+      font-style: italic;
+    }
     .gm-chat-from-other .gm-chat-bubble {
       background: #ffffff;
       border-bottom-left-radius: 4px;
@@ -3239,7 +3249,7 @@
       body = removeKnownQuotedTail(body, renderedBodies) || '(No readable message text found.)';
       renderedBodies.push(body);
       var row = document.createElement('div');
-      row.className = 'gm-chat-message-row ' + (mine ? 'gm-chat-from-me' : 'gm-chat-from-other');
+      row.className = 'gm-chat-message-row ' + (mine ? 'gm-chat-from-me' : 'gm-chat-from-other') + (msg._unsent ? ' gm-chat-unsent' : '');
       var cleanFrom = cleanSenderName(from);
       var email = extractEmail(from);
       var avatar = createAvatarElement(email, cleanFrom, 40);
@@ -4732,11 +4742,14 @@
       composeBody.value = lastSentBody;
       hideUndoButton();
       showMessage('Message undone.');
-      // Remove the trashed message from the chat bubbles instantly
+      // Gray out the undone message in chat bubbles
       if (currentThreadData && currentThreadData.messages) {
-        currentThreadData.messages = currentThreadData.messages.filter(function(m) {
-          return m.id !== lastSentMessageId;
-        });
+        for (var i = 0; i < currentThreadData.messages.length; i++) {
+          if (currentThreadData.messages[i].id === lastSentMessageId) {
+            currentThreadData.messages[i]._unsent = true;
+            break;
+          }
+        }
         renderThread(currentThreadData, currentThreadMeta);
       }
       // Also refresh sidebar in background
