@@ -2060,7 +2060,7 @@
   // *italic*, and `code`. Existing HTML in the body is escaped first.
   function formatMessageBody(text) {
     if (!text) return '';
-    var html = unwrapAngleWrappedUrls(String(text));
+    var html = unwrapAngleWrappedUrls(fixMojibake(String(text)));
 
     // Step 1 - Protect URLs with placeholders so they survive escaping.
     var urls = [];
@@ -2094,6 +2094,44 @@
   // from <div>, <p>, <br>, <li>, <tr>, and block-level elements.
   // Without this, div.textContent collapses visual line breaks and
   // turns "Cheers,\nMike" into "Cheers,Mike".
+  // Fix mojibake: when UTF-8 bytes are mistakenly interpreted as Windows-1252 chars,
+  // re-encode them back to bytes and decode correctly as UTF-8.
+  // E.g. "ðŸ"Œ" → bytes F0 9F 93 8C → "📌"
+  var _cp1252_rev = (function() {
+    // Windows-1252 byte → Unicode code point (from https://encoding.spec.whatwg.org/)
+    var map = [0x20AC,0x81,0x201A,0x0192,0x201E,0x2026,0x2020,0x2021,0x02C6,0x2030,0x0160,0x2039,0x0152,0x8D,0x017D,0x8F,0x90,0x2018,0x2019,0x201C,0x201D,0x2022,0x2013,0x2014,0x02DC,0x2122,0x0161,0x203A,0x0153,0x9D,0x017E,0x0178];
+    // Reverse: Unicode code point → Windows-1252 byte
+    var rev = {};
+    for (var i = 0; i < map.length; i++) rev[map[i]] = 0x80 + i;
+    // Also map direct 0x80-0xFF code points (CP1252 "C1" range is same as Unicode)
+    for (var b = 0x80; b <= 0xFF; b++) { if (!rev[b]) rev[b] = b; }
+    return rev;
+  })();
+
+  function fixMojibake(str) {
+    if (!str) return str;
+    var result = '', bytes = [];
+    for (var i = 0; i < str.length; i++) {
+      var cp = str.charCodeAt(i);
+      var b = _cp1252_rev[cp];
+      if (b !== undefined) {
+        bytes.push(b);
+      } else {
+        if (bytes.length) {
+          try { result += new TextDecoder('utf-8', {fatal: true}).decode(new Uint8Array(bytes)); }
+          catch(e) { result += String.fromCharCode.apply(null, bytes); }
+          bytes = [];
+        }
+        result += str.charAt(i);
+      }
+    }
+    if (bytes.length) {
+      try { result += new TextDecoder('utf-8', {fatal: true}).decode(new Uint8Array(bytes)); }
+      catch(e) { result += String.fromCharCode.apply(null, bytes); }
+    }
+    return result;
+  }
+
   function htmlToTextPreservingBreaks(root) {
     if (!root) return '';
 
@@ -2110,13 +2148,13 @@
       blocks[j].appendChild(document.createTextNode('\n'));
     }
 
-    return clone.textContent
+    return fixMojibake(clone.textContent
       .replace(/[ \t]+\n/g, '\n')
       .replace(/\n[ \t]+/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
       .replace(/<\/?[a-zA-Z][^>]*\/?>?/g, '') // Strip stray HTML fragments
       .replace(/<\/\s*/g, '')                // Strip bare closing tag fragments
-      .trim();
+      .trim());
   }
 
   function parseMessageBody(payload) {
